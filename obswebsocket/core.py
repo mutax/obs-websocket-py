@@ -46,6 +46,7 @@ class obsws:
         self.ws = None
         self.eventmanager = EventManager()
         self.answers = {}
+        self.events: dict[str, threading.Event] = {}
 
         self.host = host
         self.port = port
@@ -175,17 +176,13 @@ class obsws:
         self.id += 1
         data["message-id"] = message_id
         LOG.debug(u"Sending message id {}: {}".format(message_id, data))
+        event = threading.Event()
+        self.events[message_id] = event
         self.ws.send(json.dumps(data))
-        return self._wait_message(message_id)
+        if event.wait(60):
+            return self.answers.pop(message_id)
+        raise exceptions.MessageTimeout(u"No answer for message {}".format(message_id))
 
-    def _wait_message(self, message_id):
-        timeout = time.time() + 60  # Timeout = 60s
-        while time.time() < timeout:
-            if message_id in self.answers:
-                return self.answers.pop(message_id)
-            time.sleep(0.1)
-        raise exceptions.MessageTimeout(u"No answer for message {}".format(
-            message_id))
 
     def register(self, func, event=None):
         """
@@ -237,7 +234,9 @@ class RecvThread(threading.Thread):
                 elif 'message-id' in result:
                     LOG.debug(u"Got answer for id {}: {}".format(
                         result['message-id'], result))
-                    self.core.answers[result['message-id']] = result
+                    message_id = result['message-id']
+                    self.core.answers[message_id] = result
+                    self.core.events.pop(message_id).set()
                 else:
                     LOG.warning(u"Unknown message: {}".format(result))
             except websocket.WebSocketConnectionClosedException:
